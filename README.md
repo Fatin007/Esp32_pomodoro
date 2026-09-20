@@ -38,51 +38,113 @@ pio device monitor -b 115200
 
 After Wi-Fi connects, the serial monitor prints the IP address. Open `http://<ip>/` in any browser on the same network.
 
+## Project Structure
+
+The firmware is split into focused modules under `src/dashboard/`. `src/main.cpp` only wires them together.
+
+```
+src/
+├── main.cpp                            # setup() and loop() only
+└── dashboard/
+    ├── app_state.h / .cpp              # Shared state: modes, durations, timer vars, whistle
+    ├── time_format.h / .cpp            # mm:ss / hh:mm:ss formatter
+    ├── buzzer.h / .cpp                 # Football-whistle alert
+    ├── lcd_display.h / .cpp            # 16x2 LCD rendering per mode
+    ├── timers.h / .cpp                 # Pomodoro session cycle, tick logic
+    ├── web_routes.h / .cpp             # HTTP routes + JSON status
+    ├── dashboard_page.h                # Embedded HTML/CSS/JS (PROGMEM)
+    └── wifi_setup.h / .cpp             # Wi-Fi credentials + connect()
+```
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Browser["Phone / Laptop Browser"]
+        UI["Web Dashboard<br/>(HTML / CSS / JS)"]
+    end
+
+    subgraph ESP["ESP32 Firmware"]
+        direction TB
+
+        subgraph Dashboard["src/dashboard/"]
+            Wifi["wifi_setup"]
+            Routes["web_routes"]
+            Page["dashboard_page<br/>(PROGMEM HTML)"]
+            Timers["timers"]
+            State["app_state<br/>(shared state)"]
+            LCD["lcd_display"]
+            Buzzer["buzzer"]
+            Time["time_format"]
+        end
+
+        Main["main.cpp<br/>setup() / loop()"]
+
+        subgraph HW["Hardware"]
+            ESP32HW["ESP32"]
+            LCD1602["16x2 I2C LCD"]
+            Piezo["Piezo Buzzer"]
+        end
+    end
+
+    UI -- "HTTP GET /<br/>(JSON, HTML)" --> Routes
+    Wifi -- "Wi-Fi connect" --> ESP32HW
+
+    Main --> Wifi
+    Main --> Routes
+    Main --> Timers
+    Main --> LCD
+
+    Routes --> State
+    Routes --> Timers
+    Routes --> LCD
+    Routes --> Buzzer
+    Routes --> Page
+    Routes --> Time
+
+    Timers --> State
+    Timers --> Buzzer
+    Timers --> LCD
+
+    LCD --> Time
+    LCD --> LCD1602
+    Buzzer --> Piezo
+    ESP32HW -. "GPIO / I2C / tone()" .-> LCD1602
+    ESP32HW -. "GPIO 25" .-> Piezo
+```
+
+**How it flows:**
+
+- `main.cpp` boots, calls `connectWiFi()`, then `setupRoutes()`, then enters the loop.
+- The loop runs three things every tick: `server.handleClient()` (HTTP), `updateTimer()` (1-second tick), `updateBuzzer()` (whistle ramp).
+- The browser talks to the ESP32 only through `web_routes` — `GET /` returns the dashboard HTML, `GET /status` returns JSON, the other routes change state.
+- `web_routes` and `timers` share state through `app_state` rather than passing everything explicitly.
+
 ## Configuration
 
-Edit the top of `src/main.cpp`:
+Wi-Fi credentials live in `src/dashboard/wifi_setup.cpp`:
 
 ```cpp
-#include <Arduino.h>
-#include <WiFi.h>
-#include <WebServer.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
-
-// ======================================================
-// Wi-Fi
-// ======================================================
-
 const char* WIFI_SSID = "YOUR-WIFI-SSID";
 const char* WIFI_PASSWORD = "YOUR-WIFI-PASSWORD";
+```
 
-// ======================================================
-// Pins
-// ======================================================
+Pomodoro durations and pin definitions live in `src/dashboard/app_state.h` / `app_state.cpp`:
 
-#define I2C_SDA 21
-#define I2C_SCL 22
-#define BUZZER_PIN 25
+```cpp
+const unsigned long FOCUS_SECONDS       = 25UL * 60UL;
+const unsigned long SHORT_BREAK_SECONDS = 5UL  * 60UL;
+const unsigned long LONG_BREAK_SECONDS  = 15UL * 60UL;
 
-// ======================================================
-// LCD
-// ======================================================
+#define I2C_SDA     21
+#define I2C_SCL     22
+#define BUZZER_PIN  25
+```
 
+LCD address and size are in `src/dashboard/lcd_display.cpp`:
+
+```cpp
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-// ======================================================
-// Web Server
-// ======================================================
-
-WebServer server(80);
-
-// ======================================================
-// Pomodoro Settings
-// ======================================================
-
-const unsigned long FOCUS_SECONDS = 25UL * 60UL;
-const unsigned long SHORT_BREAK_SECONDS = 5UL * 60UL;
-const unsigned long LONG_BREAK_SECONDS = 15UL * 60UL;
 ```
 
 ## Screenshots
